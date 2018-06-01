@@ -1,115 +1,137 @@
 package main
 
 import (
-	"io/ioutil"
+	"context"
+	"flag"
 	l "log"
 	"os"
 	"os/exec"
-	"path"
-	"strings"
+	"path/filepath"
+	"strconv"
+
+	"github.com/rjeczalik/notify"
 )
 
-const (
-	EXECUTABLE = "go"
+const DIR_PERMISSIONS = 0700
 
-	RUN = "run"
-
-	USAGE = `
-
-    gorun .
-    gorun <directory>
-    gorun <directory> <... args>
-    gorun --help`
-
-	HELP = `gorun is a simple way to run a Go directory. Usage:` + USAGE
-
-	MISSING_ARG = `Please specify a file or directory to run. Examples:` + USAGE
+var (
+	log     = l.New(os.Stderr, "[gorun] ", 0)
+	TEMPDIR = filepath.Join(os.TempDir(), "gorun-"+strconv.FormatInt(int64(os.Getpid()), 10))
 )
-
-var log = l.New(os.Stderr, "", 0)
 
 func main() {
-	if !(len(os.Args) >= 2) {
-		log.Fatal(MISSING_ARG)
-	}
-	target := os.Args[1]
+	watch := flag.Bool("w", false, "Watch and rerun")
+	name := flag.String("n", "", "Process name")
+	flag.Parse()
 
-	if target == "--help" || target == "-h" {
-		log.Fatal(HELP)
+	if len(flag.Args()) == 0 {
+		log.Println("Please specify a file or directory to run. Usage:")
+		flag.PrintDefaults()
+		os.Exit(1)
 	}
 
-	stat, err := os.Stat(target)
+	err := os.MkdirAll(TEMPDIR, DIR_PERMISSIONS)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 
-	if stat.IsDir() {
-		runDir(target, os.Args[2:])
-	} else {
-		runFile(target, os.Args[2:])
-	}
-}
+	target, args := flag.Args()[0], flag.Args()[1:]
 
-func runDir(target string, args []string) {
-	stats, err := ioutil.ReadDir(target)
+	if !*watch {
+		err := buildAndRun(context.Background(), *name, target, args)
+		if err != nil {
+			fatal(err)
+		}
+		return
+	}
+
+	events := make(chan notify.EventInfo, 1)
+	// `dir/...` works as a glob pattern
+	err = notify.Watch(filepath.Join(target, "..."), events, notify.All)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 
-	paths := []string{}
-	for _, stat := range stats {
-		pt := path.Join(target, stat.Name())
-		if path.Ext(pt) != ".go" ||
-			strings.HasSuffix(pt, "_test.go") {
-			continue
+	for {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := gogo(func() error {
+			return buildAndRun(ctx, *name, target, args)
+		})
+
+		select {
+		case <-events:
+			cancel()
+		case err := <-done:
+			if err != nil {
+				logErr(err)
+			}
+			<-events
 		}
-		if !stat.IsDir() {
-			paths = append(paths, pt)
-		}
 	}
-	if len(paths) == 0 {
-		log.Fatalf("No .go files found in directory %s", target)
-	}
-
-	cmdArgs := []string{RUN}
-	for _, path := range paths {
-		cmdArgs = append(cmdArgs, path)
-	}
-	for _, arg := range args {
-		cmdArgs = append(cmdArgs, arg)
-	}
-
-	runCmd(EXECUTABLE, cmdArgs)
 }
 
-func runFile(target string, args []string) {
-	cmdArgs := []string{RUN, target}
-	for _, arg := range args {
-		cmdArgs = append(cmdArgs, arg)
+func buildAndRun(ctx context.Context, name string, target string, args []string) error {
+	if name == "" {
+		var err error
+		name, err = binName(target)
+		if err != nil {
+			return err
+		}
 	}
-	runCmd(EXECUTABLE, cmdArgs)
+
+	binpath := filepath.Join(TEMPDIR, name)
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", binpath, target)
+	pipeIo(cmd)
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	cmd = exec.CommandContext(ctx, binpath, args...)
+	pipeIo(cmd)
+	return cmd.Run()
 }
 
-func runCmd(executable string, args []string) {
-	log.Printf("# Command: %s %s", executable, strings.Join(args, " "))
+func gogo(fun func() error) chan error {
+	out := make(chan error, 1)
+	go func() {
+		err := fun()
+		if err != nil {
+			out <- err
+		}
+		close(out)
+	}()
+	return out
+}
 
-	cmd := exec.Command(executable, args...)
+func pipeIo(cmd *exec.Cmd) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+}
 
-	err := cmd.Run()
-
-	if err != nil {
-		// In exec.ExitError, the error message is just a prefix+suffix of the
-		// subprocess's stderr, which we already redirect to our stderr. So
-		// there's no point logging it. Would be nice to reuse the subprocess's
-		// exit code, but I found no way to get it.
-		exitErr, _ := err.(*exec.ExitError)
-		if exitErr != nil {
-			os.Exit(1)
+func binName(target string) (string, error) {
+	if target == "." {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
 		}
-
-		log.Fatal(err)
+		return filepath.Base(wd), nil
 	}
+	return filepath.Base(target), nil
+}
+
+func fatal(err error) {
+	logErr(err)
+	os.Exit(1)
+}
+
+func logErr(err error) {
+	// In exec.ExitError, the error message is just a prefix+suffix of the
+	// subprocess's stderr, which we already redirect to our stderr. So
+	// there's no point logging it.
+	exitErr, _ := err.(*exec.ExitError)
+	if exitErr != nil {
+		return
+	}
+	log.Println(err)
 }
