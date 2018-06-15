@@ -8,16 +8,17 @@ import (
 	l "log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rjeczalik/notify"
 )
 
 const (
-	DIR_PERMISSIONS = 0700
+	DIR_MODE = 0700
 
 	EXAMPLES = `
   gorun .
@@ -25,93 +26,100 @@ const (
   gorun ./dir arg0 arg1 arg2 ...
 
   gorun -w               ./dir
-  gorun -n=process-name  ./dir
   gorun -p=./dir,./dir0  ./dir
+  gorun -n=name          ./dir
   gorun -v -w -n=name    ./dir
 `
 )
 
 var (
-	OUT     = flag.CommandLine.Output()
-	VERBOSE = l.New(ioutil.Discard, "[gorun] ", 0)
-	TEMPDIR = filepath.Join(os.TempDir(), "gorun-"+strconv.FormatInt(int64(os.Getpid()), 10))
+	WATCH   = flag.Bool("w", false, "Watch and rerun")
+	PATTERN = flag.String("p", "", "Comma-separated watch patterns. Implies -w. Uses ... as wildcard.")
+	NAME    = flag.String("n", "", "Binary and process name for 'go build'")
+	VERBOSE = flag.Bool("v", false, "Verbose logging")
+
+	log  = l.New(flag.CommandLine.Output(), "", 0)
+	verb = l.New(ioutil.Discard, "[gorun] ", 0)
+
+	TEMPDIR string
 )
 
-func printUsage() {
-	fmt.Fprintf(OUT, "\n%s\nOptions:\n\n", EXAMPLES)
-	flag.PrintDefaults()
-}
-
 func main() {
-	watch := flag.Bool("w", false, "Watch and rerun")
-	name := flag.String("n", "", "Process name")
-	verbose := flag.Bool("v", false, "Verbose logging")
-	pattern := flag.String("p", "", "Comma-separated watch patterns. Implies -w. Use ... for a wildcard.")
+	printUsage := func() {
+		log.Print(EXAMPLES, "\n\nOptions:\n\n")
+		flag.PrintDefaults()
+	}
 
 	// For implicit "-h"
 	flag.Usage = func() {
-		fmt.Fprintf(OUT, `Usage of %s:`, os.Args[0])
+		log.Printf(`Usage of %s:`, os.Args[0])
 		printUsage()
 	}
 
+	// In addition to parsing flags, if called with "-h", this will print help
+	// and exit the process.
 	flag.Parse()
 
-	if *verbose {
-		VERBOSE.SetOutput(OUT)
-	}
-
 	if len(flag.Args()) == 0 {
-		fmt.Fprintf(OUT, `Please specify a file or directory to run. Usage:`)
+		log.Printf(`Please specify a file or directory to run. Usage:`)
 		printUsage()
 		os.Exit(1)
 	}
 
-	err := os.MkdirAll(TEMPDIR, DIR_PERMISSIONS)
-	if err != nil {
-		fatal(err)
+	if *VERBOSE {
+		verb.SetOutput(flag.CommandLine.Output())
 	}
 
-	patterns := splitPattern(*pattern)
+	patterns := stringSplit(*PATTERN, ",")
 	if len(patterns) > 0 {
-		*watch = true
+		*WATCH = true
 	}
+
+	initTempAndCleanup()
 
 	target, args := flag.Args()[0], flag.Args()[1:]
 
-	// Single run
-	if !*watch {
-		err := buildAndRun(context.Background(), *name, target, args)
-		if err != nil {
-			fatal(err)
-		}
-		return
+	var err error
+	if !*WATCH {
+		err = runOnce(target, args)
+	} else {
+		err = watchAndRerun(target, args, patterns)
 	}
 
-	// Watch
+	if err != nil {
+		logErr(err)
+		os.Exit(1)
+	}
+}
 
+func runOnce(target string, args []string) error {
+	return runTarget(context.Background(), target, args)
+}
+
+func watchAndRerun(target string, args, patterns []string) error {
 	if len(patterns) == 0 {
 		patterns = []string{filepath.Join(target, "...")}
 	}
 
 	events := make(chan notify.EventInfo, 1)
 	for _, pattern := range patterns {
-		VERBOSE.Printf("Watching pattern %v", pattern)
-		err = notify.Watch(pattern, events, notify.All)
+		verb.Printf("Watching pattern %v", pattern)
+		err := notify.Watch(pattern, events, notify.All)
 		if err != nil {
-			fatal(err)
+			return err
 		}
 	}
 
 	for {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := gogo(func() error {
-			return buildAndRun(ctx, *name, target, args)
+			return runTarget(ctx, target, args)
 		})
 		t0 := time.Now()
 
 		select {
 		case <-events:
-			VERBOSE.Printf("Stopping")
+			verb.Printf("Stopping")
 			cancel()
 
 		case err := <-done:
@@ -119,10 +127,10 @@ func main() {
 			delta := t1.Sub(t0)
 
 			if err != nil {
-				VERBOSE.Printf("Finished in %v (error)", delta)
+				verb.Printf("Finished in %v (error)", delta)
 				logErr(err)
 			} else {
-				VERBOSE.Printf("Finished in %v", delta)
+				verb.Printf("Finished in %v", delta)
 			}
 
 			<-events
@@ -130,28 +138,63 @@ func main() {
 	}
 }
 
-func buildAndRun(ctx context.Context, name string, target string, args []string) error {
-	if name == "" {
-		var err error
-		name, err = chooseBinName(target)
-		if err != nil {
-			return err
-		}
-	}
-
-	binpath := filepath.Join(TEMPDIR, name)
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binpath, target)
-	pipeIo(cmd)
-
-	VERBOSE.Println("Building")
-	if err := cmd.Run(); err != nil {
+func runTarget(ctx context.Context, target string, args []string) error {
+	abs, err := filepath.Abs(target)
+	if err != nil {
 		return err
 	}
 
-	cmd = exec.CommandContext(ctx, binpath, args...)
-	pipeIo(cmd)
+	ext := filepath.Ext(abs)
+	isDir := ext == ""
+	binName := strings.TrimSuffix(filepath.Base(abs), ext)
+	installable := false
 
-	VERBOSE.Println("Running")
+	if isDir {
+		gopath := os.Getenv("GOPATH")
+		if gopath != "" {
+			installable = isWithinPath(filepath.Join(gopath, "src"), abs)
+		}
+	}
+
+	if installable {
+		if *NAME != "" {
+			return fmt.Errorf(`Option "-n" doesn't work with "go install"`)
+		}
+
+		t0 := time.Now()
+		cmd := exec.CommandContext(ctx, "go", "install", target)
+		pipeIo(cmd)
+		verb.Println("Installing")
+		err := cmd.Run()
+		if err != nil {
+			return err
+		}
+
+		t1 := time.Now()
+		cmd = exec.CommandContext(ctx, binName, args...)
+		pipeIo(cmd)
+		verb.Printf("Installed in %v, running", t1.Sub(t0))
+		return cmd.Run()
+	}
+
+	if *NAME != "" {
+		binName = *NAME
+	}
+
+	t0 := time.Now()
+	binPath := filepath.Join(TEMPDIR, binName)
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", binPath, target)
+	pipeIo(cmd)
+	verb.Println("Building")
+	err = cmd.Run()
+	if err != nil {
+		return err
+	}
+
+	t1 := time.Now()
+	cmd = exec.CommandContext(ctx, binPath, args...)
+	pipeIo(cmd)
+	verb.Printf("Built in %v, running", t1.Sub(t0))
 	return cmd.Run()
 }
 
@@ -173,21 +216,9 @@ func pipeIo(cmd *exec.Cmd) {
 	cmd.Stderr = os.Stderr
 }
 
-// Chooses the name for the binary to build. This determines the name of the
-// child process. Can be set manually with the -n flag.
-func chooseBinName(target string) (string, error) {
-	if target == "." {
-		wd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Base(wd), nil
-	}
-	return filepath.Base(target), nil
-}
-
-func splitPattern(pattern string) (out []string) {
-	for _, str := range strings.Split(pattern, ",") {
+// `strings.Split` without empty strings.
+func stringSplit(input string, separator string) (out []string) {
+	for _, str := range strings.Split(input, separator) {
 		str = strings.TrimSpace(str)
 		if str != "" {
 			out = append(out, str)
@@ -196,9 +227,39 @@ func splitPattern(pattern string) (out []string) {
 	return
 }
 
-func fatal(err error) {
-	logErr(err)
-	os.Exit(1)
+func isWithinPath(ancestor string, descendant string) bool {
+	if len(ancestor) > len(descendant) {
+		return false
+	}
+	var i int
+	for ; i < len(ancestor); i++ {
+		if ancestor[i] != descendant[i] {
+			return false
+		}
+	}
+	return len(ancestor) == len(descendant) || descendant[i] == os.PathSeparator
+}
+
+func initTempAndCleanup() {
+	TEMPDIR = filepath.Join(os.TempDir(), fmt.Sprintf("gorun-%v", os.Getpid()))
+
+	sigs := make(chan os.Signal, 1)
+	// Might fail on Windows
+	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGINT)
+
+	go func() {
+		<-sigs
+		signal.Stop(sigs)
+
+		// verb.Printf("Received %v, deleting %v", sig, TEMPDIR)
+		err := os.RemoveAll(TEMPDIR)
+		if err != nil {
+			verb.Printf("Failed to delete %v: %v", TEMPDIR, err)
+		}
+
+		// Is there a "proper" exit code for this?
+		os.Exit(1)
+	}()
 }
 
 func logErr(err error) {
@@ -209,5 +270,5 @@ func logErr(err error) {
 	if exitErr != nil {
 		return
 	}
-	fmt.Fprintln(OUT, err)
+	log.Print(err)
 }

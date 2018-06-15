@@ -9,18 +9,25 @@ Works on MacOS, should work on Linux. Pull requests for Windows are welcome.
 
 ## Why
 
-The standard `go run` command works for single files, but not directories. Using `go build` in development quickly gets annoying. With this tool, you just `gorun .`.
+  * one command to build and run
+  * easy to remember
+  * can watch and rerun
 
-When developing a long-running program, like a server, you typically want to rerun on code changes. Other tools exist, like [`realize`](https://github.com/oxequa/realize), but they have an **earth-shattering** amounts of bells and whistles and unwanted features. I just want to watch and rerun! Silently, too!
+### Why not existing tools
 
-Differences from `realize`:
+Existing tools, like [`realize`](https://github.com/oxequa/realize), tend to:
 
-  * small and simple
-  * no extraneous logging
-  * no config files
-  * no garbage in working directory
-  * no background CPU usage, or very little of it
-  * doesn't mess with file paths in error reports
+  * have an **earth-shattering** amounts of bells and whistles
+  * have verbose logging you can't disable
+  * have unnecessary delays in the file watcher
+  * use CPU constantly
+  * require config files
+  * put garbage in the working directory
+  * mess with file paths in error reports
+  * be large and complex, so you can't fix them yourself
+  * have 1000 open issues, causing an unresponsive maintainer
+
+`gorun` doesn't.
 
 ## Installation
 
@@ -28,7 +35,7 @@ Differences from `realize`:
 go get -u github.com/Mitranim/gorun
 ```
 
-This will automatically get the code and compile the executable. Make sure your `$GOPATH/bin` is in your `$PATH` so the shell can discover it. For example, my `~/.profile` contains this:
+This will automatically compile the executable. Make sure `$GOPATH/bin` is in your `$PATH` so the shell can discover it. For example, my `~/.profile` contains this:
 
 ```sh
 export GOPATH=~/go
@@ -56,6 +63,24 @@ gorun . arg0 arg1 arg2 ...
 # Usage info
 gorun -h
 ```
+
+## Changelog
+
+### 2018-06-15
+
+Now uses `go install` when possible, falling back on `go build`.
+
+When `gorun` uses `go build` and is stopped with `^C` or by closing a terminal tab, it immediately deletes its temporary directory with the binary.
+
+After updating `gorun`, delete any leftover directories:
+
+    find $TMPDIR -name "gorun-*" -delete
+
+Verbose log now includes build duration.
+
+## TODO
+
+Consider stopping the child process with `SIGINT` to allow cleanup. Must have a timeout.
 
 ## Misc
 
