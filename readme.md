@@ -17,15 +17,14 @@ Works on MacOS, should work on Linux. Pull requests for Windows are welcome.
 
 Existing tools, like [`realize`](https://github.com/oxequa/realize), tend to:
 
-  * have an **earth-shattering** amounts of bells and whistles
+  * have an **earth-shattering** amount of bells and whistles
   * have verbose logging you can't disable
   * have unnecessary delays in the file watcher
   * use CPU constantly
   * require config files
   * put garbage in the working directory
   * mess with file paths in error reports
-  * be large and complex, so you can't fix them yourself
-  * have 1000 open issues, causing an unresponsive maintainer
+  * have thousands of lines of code, so you can't fix them yourself
 
 `gorun` doesn't.
 
