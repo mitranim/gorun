@@ -20,6 +20,8 @@ import (
 const (
 	DIR_MODE = 0700
 
+	DESCRIPTION = `"gorun" runs a Go directory. Can watch and rerun.`
+
 	EXAMPLES = `
   gorun .
   gorun ./dir
@@ -34,8 +36,8 @@ const (
 
 var (
 	WATCH   = flag.Bool("w", false, "Watch and rerun")
-	PATTERN = flag.String("p", "", "Comma-separated watch patterns. Implies -w. Uses ... as wildcard.")
-	NAME    = flag.String("n", "", "Binary and process name for 'go build'")
+	PATTERN = flag.String("p", "", `Comma-separated watch patterns. Implies "-w". Uses "..." as a wildcard.`)
+	NAME    = flag.String("n", "", `Binary and process name. Works only when using "go build".`)
 	VERBOSE = flag.Bool("v", false, "Verbose logging")
 
 	log  = l.New(flag.CommandLine.Output(), "", 0)
@@ -46,13 +48,13 @@ var (
 
 func main() {
 	printUsage := func() {
-		log.Print(EXAMPLES, "\n\nOptions:\n\n")
+		log.Print(EXAMPLES, "\nOptions:\n\n")
 		flag.PrintDefaults()
 	}
 
 	// For implicit "-h"
 	flag.Usage = func() {
-		log.Printf(`Usage of %s:`, os.Args[0])
+		log.Println(DESCRIPTION, "Usage:")
 		printUsage()
 	}
 
@@ -245,13 +247,14 @@ func initTempAndCleanup() {
 
 	sigs := make(chan os.Signal, 1)
 	// Might fail on Windows
-	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGINT)
+	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT)
 
 	go func() {
+		// sig := <-sigs
 		<-sigs
 		signal.Stop(sigs)
 
-		// verb.Printf("Received %v, deleting %v", sig, TEMPDIR)
+		// verb.Printf("Received %q, deleting %v", sig, TEMPDIR)
 		err := os.RemoveAll(TEMPDIR)
 		if err != nil {
 			verb.Printf("Failed to delete %v: %v", TEMPDIR, err)
