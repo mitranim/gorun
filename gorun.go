@@ -112,6 +112,7 @@ func watchAndRerun(target string, args, patterns []string) error {
 		}
 	}
 
+rerunLoop:
 	for {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := gogo(func() error {
@@ -119,23 +120,41 @@ func watchAndRerun(target string, args, patterns []string) error {
 		})
 		t0 := time.Now()
 
-		select {
-		case <-events:
-			verb.Printf("Stopping")
-			cancel()
+	selectLoop:
+		for {
+			select {
+			case err := <-done:
+				t1 := time.Now()
+				delta := t1.Sub(t0)
 
-		case err := <-done:
-			t1 := time.Now()
-			delta := t1.Sub(t0)
+				if err != nil {
+					verb.Printf("Finished in %v (error)", delta)
+					logErr(err)
+				} else {
+					verb.Printf("Finished in %v", delta)
+				}
 
-			if err != nil {
-				verb.Printf("Finished in %v (error)", delta)
-				logErr(err)
-			} else {
-				verb.Printf("Finished in %v", delta)
+				break selectLoop
+
+			case event := <-events:
+				if !isRelevantPath(event.Path()) {
+					verb.Printf("Ignoring %v", event)
+					continue selectLoop
+				}
+				verb.Printf("Stopping due to %v", event)
+				cancel()
+				continue rerunLoop
 			}
+		}
 
-			<-events
+		for event := range events {
+			if !isRelevantPath(event.Path()) {
+				verb.Printf("Ignoring %v", event)
+				continue
+			}
+			verb.Printf("Stopping due to %v", event)
+			cancel()
+			continue rerunLoop
 		}
 	}
 }
@@ -274,4 +293,8 @@ func logErr(err error) {
 		return
 	}
 	log.Print(err)
+}
+
+func isRelevantPath(path string) bool {
+	return filepath.Ext(path) == ".go"
 }

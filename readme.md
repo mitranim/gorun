@@ -65,6 +65,10 @@ gorun -h
 
 ## Changelog
 
+### 2018-06-28
+
+Now ignores non-`.go` files when watching, regardless of the watch pattern.
+
 ### 2018-06-15
 
 Now uses `go install` when possible, falling back on `go build`.
