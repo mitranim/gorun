@@ -13,9 +13,11 @@ Works on MacOS, should work on Linux. Pull requests for Windows are welcome.
   * easy to remember
   * can watch and rerun
 
-### Why not existing tools
+The Go team has rejected multiple proposals to add directory support to `go run`: [[1]](https://github.com/golang/go/issues/5164)[[2]](https://github.com/golang/go/issues/20432). One has finally been accepted: [[3]](https://github.com/golang/go/issues/22726), but is not part of a stable Go release at the time of writing.
 
-Existing tools, like [`realize`](https://github.com/oxequa/realize), tend to:
+### Why not existing runners
+
+Existing runners, like [`realize`](https://github.com/oxequa/realize), tend to:
 
   * have an **earth-shattering** amount of bells and whistles
   * have verbose logging you can't disable
@@ -83,17 +85,21 @@ Verbose log now includes build duration.
 
 ## TODO
 
-Consider stopping the child process with `SIGINT` to allow cleanup. Must have a timeout.
+Consider stopping the child process with `SIGINT` to allow cleanup; don't forget a timeout.
+
+## Alternatives
+
+For general purpose file watching, consider these excellent tools:
+
+  * https://github.com/emcrisostomo/fswatch
+  * https://github.com/mattgreen/watchexec
+
+Differences:
+
+  * `gorun` builds and runs a Go directory, which can be fiddly and awkward otherwise.
+  * Most general-purpose watchers don't support killing and restarting the child process; `watchexec` is one of the few exceptions.
+  * For Go, remembering how to invoke `gorun` is much easier.
 
 ## Misc
-
-Proposals to add directory support to `go run` have been rejected multiple times:
-
-  * https://github.com/golang/go/issues/5164
-  * https://github.com/golang/go/issues/20432
-
-Seems like one has finally been accepted:
-
-  * https://github.com/golang/go/issues/22726
 
 I'm receptive to suggestions. If this tool _almost_ satisfies you but needs changes, open an issue or chat me up. Contacts: https://mitranim.com/#contacts
