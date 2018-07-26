@@ -100,6 +100,10 @@ Differences:
   * Most general-purpose watchers don't support killing and restarting the child process; `watchexec` is one of the few exceptions.
   * For Go, remembering how to invoke `gorun` is much easier.
 
+## License
+
+https://en.wikipedia.org/wiki/WTFPL
+
 ## Misc
 
 I'm receptive to suggestions. If this tool _almost_ satisfies you but needs changes, open an issue or chat me up. Contacts: https://mitranim.com/#contacts
