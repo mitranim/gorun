@@ -1,3 +1,5 @@
+**Note**: deprecated in favor of https://github.com/Mitranim/gow since Go 1.11.
+
 ## Overview
 
 Minimal CLI tool for Go development. Can:
